@@ -7,6 +7,18 @@ const moment = require('moment');
 const path = require('path');
 const fs = require('fs');
 
+// Bot token'ı environment variable'dan al
+const token = process.env.BOT_TOKEN;
+
+// Vercel için webhook URL'i
+const webhookUrl = process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}/webhook` : null;
+
+// Bot'u oluştur
+const bot = new TelegramBot(token, {
+    polling: !webhookUrl, // Webhook varsa polling'i kapat
+    webHook: webhookUrl ? { port: process.env.PORT || 3000 } : false
+});
+
 // Veritabanı kurulumu
 const adapter = new FileSync(process.env.DB_FILE || './data/users.json');
 const db = low(adapter);
@@ -19,9 +31,6 @@ if (!fs.existsSync(dataDir)) {
 
 // Veritabanı varsayılan değerleri
 db.defaults({ users: {} }).write();
-
-// Bot kurulumu
-const bot = new TelegramBot(process.env.BOT_TOKEN, { polling: true });
 
 // Motivasyon mesajları
 const motivationMessages = [
@@ -836,4 +845,36 @@ crisisHours.forEach(hour => {
     });
 });
 
-console.log('🚭 Quit Smoke Bot başlatıldı!'); 
+console.log('🚭 Quit Smoke Bot başlatıldı!');
+
+// Vercel için webhook endpoint'i
+if (webhookUrl) {
+    const express = require('express');
+    const app = express();
+    
+    app.use(express.json());
+    
+    // Webhook endpoint'i
+    app.post('/webhook', (req, res) => {
+        bot.handleUpdate(req.body);
+        res.sendStatus(200);
+    });
+    
+    // Health check endpoint'i
+    app.get('/', (req, res) => {
+        res.json({ status: 'Bot is running!' });
+    });
+    
+    // Webhook'u ayarla
+    bot.setWebHook(webhookUrl).then(() => {
+        console.log('🌐 Webhook ayarlandı:', webhookUrl);
+    }).catch(console.error);
+    
+    // Server'ı başlat
+    const port = process.env.PORT || 3000;
+    app.listen(port, () => {
+        console.log(`🚭 Quit Smoke Bot webhook modunda başlatıldı! Port: ${port}`);
+    });
+} else {
+    console.log('🚭 Quit Smoke Bot polling modunda başlatıldı!');
+} 
