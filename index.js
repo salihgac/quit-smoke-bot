@@ -19,9 +19,23 @@ const bot = new TelegramBot(token, {
     webHook: webhookUrl ? { port: process.env.PORT || 3000 } : false
 });
 
-// Veritabanı kurulumu
-const adapter = new FileSync(process.env.DB_FILE || './data/users.json');
-const db = low(adapter);
+// Veritabanı kurulumu - Vercel için memory adapter kullan
+let db;
+if (process.env.NODE_ENV === 'production') {
+    // Production'da memory storage kullan
+    const Memory = require('lowdb/adapters/Memory');
+    db = low(new Memory());
+    db.defaults({ users: {} }).write();
+} else {
+    // Development'ta file storage kullan
+    const dataDir = path.join(__dirname, 'data');
+    if (!fs.existsSync(dataDir)) {
+        fs.mkdirSync(dataDir, { recursive: true });
+    }
+    const adapter = new FileSync(path.join(dataDir, 'users.json'));
+    db = low(adapter);
+    db.defaults({ users: {} }).write();
+}
 
 // Veritabanı klasörünü oluştur
 const dataDir = path.dirname(process.env.DB_FILE || './data/users.json');
@@ -789,62 +803,6 @@ bot.on('callback_query', async (query) => {
     }
 });
 
-// Günlük hatırlatmalar
-cron.schedule('0 8 * * *', async () => {
-    // Sabah motivasyon mesajı
-    const users = db.get('users').value();
-    
-    for (const [userId, userData] of Object.entries(users)) {
-        const stats = calculateStats(userData);
-        const randomMotivation = motivationMessages[Math.floor(Math.random() * motivationMessages.length)];
-        
-        await bot.sendMessage(userId, 
-            `🌅 **Günaydın!**\n\n` +
-            `🚭 Bugün sigarasız bir gün daha!\n\n` +
-            `${randomMotivation}\n\n` +
-            `📊 **${stats.daysSinceQuit}** gündür sigara içmiyorsun!\n` +
-            `💰 **${stats.moneySaved.toFixed(2)}** TL tasarruf ettin!\n\n` +
-            `💪 Bugün de harika olacak!`
-        );
-    }
-});
-
-cron.schedule('0 20 * * *', async () => {
-    // Akşam özet mesajı
-    const users = db.get('users').value();
-    
-    for (const [userId, userData] of Object.entries(users)) {
-        const stats = calculateStats(userData);
-        
-        await bot.sendMessage(userId, 
-            `🌙 **Günün Özeti**\n\n` +
-            `✅ Bugün hiç sigara içmedin!\n\n` +
-            `🚭 **${stats.daysSinceQuit}** gündür sigara içmiyorsun!\n` +
-            `💰 **${stats.moneySaved.toFixed(2)}** TL tasarruf ettin!\n` +
-            `⏰ **${Math.floor(stats.lifeGained / 60)}** saat ömrüne ömür kattın!\n\n` +
-            `🌙 İyi uykular! Yarın da birlikteyiz! 💪`
-        );
-    }
-});
-
-// Kriz anı hatırlatmaları
-const crisisHours = (process.env.CRISIS_REMINDER_HOURS || '10,14,16,18').split(',').map(h => parseInt(h));
-
-crisisHours.forEach(hour => {
-    cron.schedule(`0 ${hour} * * *`, async () => {
-        const users = db.get('users').value();
-        
-        for (const [userId, userData] of Object.entries(users)) {
-            await bot.sendMessage(userId, 
-                `⚠️ **Kriz Saati Uyarısı**\n\n` +
-                `🕐 Bu saatlerde sigara isteği artabilir.\n\n` +
-                `💪 Sen güçlüsün! Bu istek geçici.\n\n` +
-                `🚨 Kriz anı desteği için "🚨 Kriz Anı" butonuna bas!`
-            );
-        }
-    });
-});
-
 console.log('🚭 Quit Smoke Bot başlatıldı!');
 
 // Vercel için webhook endpoint'i
@@ -862,7 +820,49 @@ if (webhookUrl) {
     
     // Health check endpoint'i
     app.get('/', (req, res) => {
-        res.json({ status: 'Bot is running!' });
+        res.json({ 
+            status: 'Bot is running!',
+            webhook: webhookUrl,
+            users: Object.keys(db.get('users').value()).length
+        });
+    });
+    
+    // Manual reminder endpoint'i (Vercel cron için)
+    app.post('/remind', async (req, res) => {
+        try {
+            const users = db.get('users').value();
+            const reminderType = req.body.type || 'morning';
+            
+            for (const [userId, userData] of Object.entries(users)) {
+                const stats = calculateStats(userData);
+                
+                if (reminderType === 'morning') {
+                    const randomMotivation = motivationMessages[Math.floor(Math.random() * motivationMessages.length)];
+                    await bot.sendMessage(userId, 
+                        `🌅 **Günaydın!**\n\n` +
+                        `🚭 Bugün sigarasız bir gün daha!\n\n` +
+                        `${randomMotivation}\n\n` +
+                        `📊 **${stats.daysSinceQuit}** gündür sigara içmiyorsun!\n` +
+                        `💰 **${stats.moneySaved.toFixed(2)}** TL tasarruf ettin!\n\n` +
+                        `💪 Bugün de harika olacak!`
+                    );
+                } else if (reminderType === 'evening') {
+                    await bot.sendMessage(userId, 
+                        `🌙 **Günün Özeti**\n\n` +
+                        `✅ Bugün hiç sigara içmedin!\n\n` +
+                        `🚭 **${stats.daysSinceQuit}** gündür sigara içmiyorsun!\n` +
+                        `💰 **${stats.moneySaved.toFixed(2)}** TL tasarruf ettin!\n` +
+                        `⏰ **${Math.floor(stats.lifeGained / 60)}** saat ömrüne ömür kattın!\n\n` +
+                        `🌙 İyi uykular! Yarın da birlikteyiz! 💪`
+                    );
+                }
+            }
+            
+            res.json({ success: true, users: Object.keys(users).length });
+        } catch (error) {
+            console.error('Reminder error:', error);
+            res.status(500).json({ error: error.message });
+        }
     });
     
     // Webhook'u ayarla
@@ -876,5 +876,64 @@ if (webhookUrl) {
         console.log(`🚭 Quit Smoke Bot webhook modunda başlatıldı! Port: ${port}`);
     });
 } else {
+    // Development modunda cron jobs çalıştır
     console.log('🚭 Quit Smoke Bot polling modunda başlatıldı!');
+    
+    // Cron jobs sadece development'ta
+    if (process.env.NODE_ENV !== 'production') {
+        // Sabah motivasyon mesajı (8:00)
+        cron.schedule('0 8 * * *', async () => {
+            const users = db.get('users').value();
+            
+            for (const [userId, userData] of Object.entries(users)) {
+                const stats = calculateStats(userData);
+                const randomMotivation = motivationMessages[Math.floor(Math.random() * motivationMessages.length)];
+                
+                await bot.sendMessage(userId, 
+                    `🌅 **Günaydın!**\n\n` +
+                    `🚭 Bugün sigarasız bir gün daha!\n\n` +
+                    `${randomMotivation}\n\n` +
+                    `📊 **${stats.daysSinceQuit}** gündür sigara içmiyorsun!\n` +
+                    `💰 **${stats.moneySaved.toFixed(2)}** TL tasarruf ettin!\n\n` +
+                    `💪 Bugün de harika olacak!`
+                );
+            }
+        });
+
+        // Akşam özet mesajı (20:00)
+        cron.schedule('0 20 * * *', async () => {
+            const users = db.get('users').value();
+            
+            for (const [userId, userData] of Object.entries(users)) {
+                const stats = calculateStats(userData);
+                
+                await bot.sendMessage(userId, 
+                    `🌙 **Günün Özeti**\n\n` +
+                    `✅ Bugün hiç sigara içmedin!\n\n` +
+                    `🚭 **${stats.daysSinceQuit}** gündür sigara içmiyorsun!\n` +
+                    `💰 **${stats.moneySaved.toFixed(2)}** TL tasarruf ettin!\n` +
+                    `⏰ **${Math.floor(stats.lifeGained / 60)}** saat ömrüne ömür kattın!\n\n` +
+                    `🌙 İyi uykular! Yarın da birlikteyiz! 💪`
+                );
+            }
+        });
+
+        // Kriz anı hatırlatmaları
+        const crisisHours = (process.env.CRISIS_REMINDER_HOURS || '10,14,16,18').split(',').map(h => parseInt(h));
+
+        crisisHours.forEach(hour => {
+            cron.schedule(`0 ${hour} * * *`, async () => {
+                const users = db.get('users').value();
+                
+                for (const [userId, userData] of Object.entries(users)) {
+                    await bot.sendMessage(userId, 
+                        `⚠️ **Kriz Saati Uyarısı**\n\n` +
+                        `🕐 Bu saatlerde sigara isteği artabilir.\n\n` +
+                        `💪 Sen güçlüsün! Bu istek geçici.\n\n` +
+                        `🚨 Kriz anı desteği için "🚨 Kriz Anı" butonuna bas!`
+                    );
+                }
+            });
+        });
+    }
 } 
