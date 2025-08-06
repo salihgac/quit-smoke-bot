@@ -1,0 +1,26 @@
+version: '3.8'
+
+services:
+  quit-smoke-bot:
+    build: .
+    container_name: quit-smoke-bot
+    restart: unless-stopped
+    environment:
+      - NODE_ENV=production
+      - BOT_TOKEN=${BOT_TOKEN}
+      - DB_FILE=./data/users.json
+      - MORNING_REMINDER_HOUR=8
+      - EVENING_REMINDER_HOUR=20
+      - CRISIS_REMINDER_HOURS=10,14,16,18
+      - CIGARETTE_PRICE=25
+      - DAILY_CIGARETTE_COUNT=20
+    volumes:
+      - ./data:/app/data
+    ports:
+      - "3000:3000"
+    networks:
+      - bot-network
+
+networks:
+  bot-network:
+    driver: bridge 
